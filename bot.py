@@ -5,7 +5,7 @@ from telegram import Bot
 
 # Telegram Bot Token
 BOT_TOKEN = "7027890843:AAGORAyjCLS1dTQ84mSx7yUvQKhilkRs0ic"
-CHAT_ID = "<YOUR_CHAT_ID>"  # Replace with your Telegram group/chat ID
+CHAT_ID = "YOUR_CHAT_ID_HERE"  # Replace with your actual Telegram group/chat ID (number or @groupusername)
 
 # Dexscreener API pairs
 PAIRS = [
@@ -33,12 +33,13 @@ def main():
         for pair in PAIRS:
             trades = get_trades(pair)
             for t in trades:
-                if t.get("type") == "buy" and t.get("priceUsd") and float(t.get("priceUsd", 0)) >= 1:
-                    txn_hash = t.get("hash")
-                    if txn_hash not in last_hashes:
-                        msg = f"🚀 Buy Alert: ${t.get('priceUsd')} | Pair: {pair.split('/')[-1]}"
-                        bot.send_message(chat_id=CHAT_ID, text=msg)
-                        last_hashes.add(txn_hash)
+                if isinstance(t, dict):  # 🛡️ Protect against bad data
+                    if t.get("type") == "buy" and t.get("priceUsd") and float(t.get("priceUsd", 0)) >= 1:
+                        txn_hash = t.get("hash")
+                        if txn_hash not in last_hashes:
+                            msg = f"🚀 Buy Alert: ${t.get('priceUsd')} | Pair: {pair.split('/')[-1]}"
+                            bot.send_message(chat_id=CHAT_ID, text=msg)
+                            last_hashes.add(txn_hash)
         time.sleep(60)
 
 if __name__ == "__main__":
