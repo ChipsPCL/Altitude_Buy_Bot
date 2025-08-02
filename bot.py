@@ -4,7 +4,7 @@ import os
 from telegram import Bot
 
 # Telegram Bot Token
-BOT_TOKEN = "7027890843:AAGORAyjCLS1dTQ84mSx7yUvQKhilkRs0ic"
+BOT_TOKEN = "8454008954:AAE9NwtBPPmbVggVCSsk1N3oNAiRRC3fhhE"
 CHAT_ID = -1001957125015
 
 
