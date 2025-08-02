@@ -1,12 +1,10 @@
 import requests
 import time
-import os
 from telegram import Bot
 
 # Telegram Bot Token
 BOT_TOKEN = "8454008954:AAE9NwtBPPmbVggVCSsk1N3oNAiRRC3fhhE"
 CHAT_ID = "-1001957125015"
-
 
 # Dexscreener API pairs
 PAIRS = [
@@ -22,25 +20,32 @@ def get_trades(pair_url):
         r = requests.get(pair_url, timeout=10)
         data = r.json()
         trades = data.get("pair", {}).get("txns", {}).get("m5", [])
+        print(f"✅ Trades from {pair_url.split('/')[-1]}: {trades}")  # DEBUG
         return trades
     except Exception as e:
         print("Error fetching data:", e)
         return []
 
 def main():
-    print("Altitude Buy Bot started...")
+    print("🚀 Altitude Buy Bot started...")
     last_hashes = set()
     while True:
         for pair in PAIRS:
             trades = get_trades(pair)
             for t in trades:
-                if isinstance(t, dict):  # 🛡️ Protect against bad data
-                    if t.get("type") == "buy" and t.get("priceUsd") and float(t.get("priceUsd", 0)) >= 1:
-                        txn_hash = t.get("hash")
-                        if txn_hash not in last_hashes:
-                            msg = f"🚀 Buy Alert: ${t.get('priceUsd')} | Pair: {pair.split('/')[-1]}"
-                            bot.send_message(chat_id=CHAT_ID, text=msg)
-                            last_hashes.add(txn_hash)
+                if isinstance(t, dict):
+                    txn_hash = t.get("hash")
+                    print(f"🔍 Checking trade {txn_hash} — Type: {t.get('type')} — Price: {t.get('priceUsd')}")  # DEBUG
+                    if (
+                        t.get("type") == "buy" and
+                        t.get("priceUsd") and
+                        float(t.get("priceUsd", 0)) >= 1 and
+                        txn_hash not in last_hashes
+                    ):
+                        msg = f"🚀 Buy Alert: ${t.get('priceUsd')} | Pair: {pair.split('/')[-1]}"
+                        print(f"📣 SENDING: {msg}")  # DEBUG
+                        bot.send_message(chat_id=CHAT_ID, text=msg)
+                        last_hashes.add(txn_hash)
         time.sleep(60)
 
 if __name__ == "__main__":
