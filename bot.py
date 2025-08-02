@@ -5,7 +5,8 @@ from telegram import Bot
 
 # Telegram Bot Token
 BOT_TOKEN = "7027890843:AAGORAyjCLS1dTQ84mSx7yUvQKhilkRs0ic"
-CHAT_ID = "YOUR_CHAT_ID_HERE"  # Replace with your actual Telegram group/chat ID (number or @groupusername)
+CHAT_ID = -1001957125015
+
 
 # Dexscreener API pairs
 PAIRS = [
