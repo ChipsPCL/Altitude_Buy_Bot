@@ -20,16 +20,22 @@ def fetch_trades(pool_addr):
     url = f"https://api.geckoterminal.com/api/v2/networks/{NETWORK}/pools/{pool_addr}/trades"
     try:
         r = requests.get(url, timeout=10)
-        data = r.json()
-        trades = data.get("data", {}).get("attributes", {}).get("trades", [])
+        json_data = r.json()
+        trades = json_data.get("data", [])
         return trades
     except Exception as e:
         print(f"❌ Error fetching trades from {pool_addr}: {e}")
         return []
 
 def format_message(trade, pair_name):
-    amount = float(trade.get("quote_price", 0)) * float(trade.get("base_amount", 0))
-    return f"🚀 Buy Alert (${amount:.2f}) on {pair_name}\n📈 Token: {trade.get('base_symbol')}\n💵 Price: ${trade.get('quote_price')}\n🔗 Hash: {trade.get('tx_hash')[:10]}..."
+    attrs = trade.get("attributes", {})
+    amount = float(attrs.get("quote_price", 0)) * float(attrs.get("base_amount", 0))
+    return (
+        f"🚀 Buy Alert (${amount:.2f}) on {pair_name}\n"
+        f"📈 Token: {attrs.get('base_symbol')}\n"
+        f"💵 Price: ${attrs.get('quote_price')}\n"
+        f"🔗 Hash: {attrs.get('transaction_hash')[:10]}..."
+    )
 
 # --- Main Loop ---
 def main():
@@ -40,9 +46,10 @@ def main():
             print(f"✅ Checked {pair['name']}: {len(trades)} trades")
 
             for trade in trades:
-                tx_hash = trade.get("tx_hash")
-                if trade.get("trade_type") == "buy" and tx_hash not in seen_hashes:
-                    amount = float(trade.get("quote_price", 0)) * float(trade.get("base_amount", 0))
+                attrs = trade.get("attributes", {})
+                tx_hash = attrs.get("transaction_hash")
+                if attrs.get("trade_type") == "buy" and tx_hash not in seen_hashes:
+                    amount = float(attrs.get("quote_price", 0)) * float(attrs.get("base_amount", 0))
                     if amount >= 1:
                         msg = format_message(trade, pair["name"])
                         try:
