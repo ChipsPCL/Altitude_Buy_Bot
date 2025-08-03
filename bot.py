@@ -33,6 +33,8 @@ def main():
         for pair in PAIRS:
             trades = get_trades(pair)
             for t in trades:
+                print(f"🧪 Raw trade data: {t}")  # 👈 NEW DEBUG LINE to show entire trade dictionary
+
                 if isinstance(t, dict):
                     txn_hash = t.get("hash")
                     print(f"🔍 Checking trade {txn_hash} — Type: {t.get('type')} — Price: {t.get('priceUsd')}")
