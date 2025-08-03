@@ -1,65 +1,75 @@
-import requests
-import time
+import os
+import asyncio
+from web3 import Web3
 from telegram import Bot
+import aiohttp
 
 # --- Configuration ---
-BOT_TOKEN = "8454008954:AAE9NwtBPPmbVggVCSsk1N3oNAiRRC3fhhE"
-CHAT_ID = "-1001957125015"
-PAIRS = [
-    {"name": "Altitude/WETH", "pool": "0xd57f6e7d7ec911ba8defcf93d3682bb76959e950"},
-    {"name": "Altitude/USDC", "pool": "0xbf09c7f883f045feea7a59b50ba2e5df080fb4b8"},
-    {"name": "Altitude/cbBTC", "pool": "0xd93846f45180a7e99d5bcbc67cefc4538bb02214"},
+BOT_TOKEN  = os.getenv("BOT_TOKEN")
+CHAT_ID    = os.getenv("CHAT_ID")
+RPC_URL    = os.getenv("RPC_URL")  # e.g. wss://rpc.ankr.com/base/ws
+
+# Pools to monitor
+POOL_DATA = [
+    {"name": "Altitude – BaseSwap V2", "address": "0xd57f6e7D7eC911bA8deFCf93d3682BB76959e950", "type": "v2"},
+    {"name": "Altitude – Aerodrome V2", "address": "0xbf09C7F883F045fEeA7a59b50BA2E5dF080fb4B8", "type": "v2"},
+    {"name": "Altitude – PancakeSwap V3", "address": "0xd93846f45180a7e99d5bCBc67cefC4538bb02214", "type": "v3"},
 ]
-NETWORK = "base"
+
+# Simplified ABIs for Swap events
+V2_ABI = [{
+    "anonymous": False,
+    "inputs": [
+        {"indexed": False, "name": "sender", "type": "address"},
+        {"indexed": False, "name": "amount0In", "type": "uint256"},
+        {"indexed": False, "name": "amount1In", "type": "uint256"},
+        {"indexed": False, "name": "amount0Out", "type": "uint256"},
+        {"indexed": False, "name": "amount1Out", "type": "uint256"},
+        {"indexed": True, "name": "to", "type": "address"},
+    ],
+    "name": "Swap",
+    "type": "event"
+}]
+V3_ABI = V2_ABI  # For simplicity use same event decoding
 
 bot = Bot(token=BOT_TOKEN)
-seen_hashes = set()
+w3 = Web3(Web3.WebsocketProvider(RPC_URL))
 
-# --- Functions ---
-def fetch_trades(pool_addr):
-    url = f"https://api.geckoterminal.com/api/v2/networks/{NETWORK}/pools/{pool_addr}/trades"
-    try:
-        r = requests.get(url, timeout=10)
-        json_data = r.json()
-        trades = json_data.get("data", [])
-        return trades
-    except Exception as e:
-        print(f"❌ Error fetching trades from {pool_addr}: {e}")
-        return []
+seen = set()
 
-def format_message(trade, pair_name):
-    attrs = trade.get("attributes", {})
-    amount = float(attrs.get("quote_price", 0)) * float(attrs.get("base_amount", 0))
-    return (
-        f"🚀 Buy Alert (${amount:.2f}) on {pair_name}\n"
-        f"📈 Token: {attrs.get('base_symbol')}\n"
-        f"💵 Price: ${attrs.get('quote_price')}\n"
-        f"🔗 Hash: {attrs.get('transaction_hash')[:10]}..."
-    )
+async def fetch_price_usd(symbol):
+    async with aiohttp.ClientSession() as session:
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
+        async with session.get(url, timeout=5) as r:
+            j = await r.json()
+            return j.get(symbol, {}).get("usd", 0)
 
-# --- Main Loop ---
-def main():
-    print("📡 Altitude BuyBot started using GeckoTerminal API...")
+async def handle_event(event, pair):
+    tx = event["transactionHash"].hex()
+    if tx in seen:
+        return
+    seen.add(tx)
+
+    # For V2: amount0In/out and amount1In/out. Identify which token is Altitude
+    amt_in = int(event["args"]["amount1In"] or 0)
+    amt_out = int(event["args"]["amount1Out"] or 0)
+    # Simplify: assume one side is Altitude and other is ETH/cbBTC/USDC
+    usd_val = amt_out * await fetch_price_usd("ethereum") / 1e18 if amt_out else amt_in * await fetch_price_usd("ethereum") / 1e18
+
+    if usd_val >= 1:
+        msg = f"🚀 Buy Alert (${usd_val:.2f}) on {pair['name']}\n🔗 Tx: {tx[:10]}..."
+        await bot.send_message(chat_id=CHAT_ID, text=msg)
+
+async def monitor_pool(pair):
+    contract = w3.eth.contract(address=pair["address"], abi=V2_ABI)
+    event_filter = contract.events.Swap.create_filter(fromBlock="latest")
     while True:
-        for pair in PAIRS:
-            trades = fetch_trades(pair["pool"])
-            print(f"✅ Checked {pair['name']}: {len(trades)} trades")
+        for ev in event_filter.get_new_entries():
+            await handle_event(ev, pair)
+        await asyncio.sleep(2)
 
-            for trade in trades:
-                attrs = trade.get("attributes", {})
-                tx_hash = attrs.get("transaction_hash")
-                if attrs.get("trade_type") == "buy" and tx_hash not in seen_hashes:
-                    amount = float(attrs.get("quote_price", 0)) * float(attrs.get("base_amount", 0))
-                    if amount >= 1:
-                        msg = format_message(trade, pair["name"])
-                        try:
-                            bot.send_message(chat_id=CHAT_ID, text=msg)
-                            print(f"📤 Sent alert: {msg}")
-                        except Exception as e:
-                            print(f"❌ Failed to send alert: {e}")
-                    seen_hashes.add(tx_hash)
-
-        time.sleep(30)
+async def main():
+    await asyncio.gather(*(monitor_pool(p) for p in POOL_DATA))
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
