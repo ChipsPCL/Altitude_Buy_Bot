@@ -1,81 +1,84 @@
 import asyncio
-import os
+import json
 from web3 import Web3
 from telegram import Bot
-from telegram.error import TelegramError
 
-# Env vars
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-RPC_URL = os.getenv("RPC_URL")
+# --- Hardcoded Config ---
+BOT_TOKEN = "8454008954:AAE9NwtBPPmbVggVCSsk1N3oNAiRRC3fhhE"
+CHAT_ID = "-1001957125015"
+RPC_URL = "wss://rpc.ankr.com/base/ws"
 
+# --- Altitude Pools ---
+POOLS = {
+    "Altitude/WETH": {
+        "address": "0xD57f6e7D7eC911bA8deFCf93d3682BB76959e950",
+        "abi": "uniswap_v2.json"
+    },
+    "Altitude/USDC": {
+        "address": "0xbf09C7F883F045fEeA7a59b50BA2E5dF080fb4B8",
+        "abi": "uniswap_v2.json"
+    },
+    "Altitude/cbBTC": {
+        "address": "0xd93846f45180A7e99d5bCBc67cefC4538bb02214",
+        "abi": "pancake_v3.json"
+    }
+}
+
+# --- Load ABIs ---
+with open("uniswap_v2.json") as f:
+    UNIV2_ABI = json.load(f)
+with open("pancake_v3.json") as f:
+    V3_ABI = json.load(f)
+
+# --- Telegram Bot Setup ---
 bot = Bot(token=BOT_TOKEN)
+
+# --- Web3 Setup ---
 w3 = Web3(Web3.WebsocketProvider(RPC_URL))
 
-# Pool data
-POOLS = [
-    {
-        "name": "Altitude/WETH",
-        "address": Web3.to_checksum_address("0xd57f6e7d7ec911ba8defcf93d3682bb76959e950"),
-        "altitude_is_token0": False,
-    },
-    {
-        "name": "Altitude/USDC",
-        "address": Web3.to_checksum_address("0xbf09C7F883F045fEeA7a59b50BA2E5dF080fb4B8"),
-        "altitude_is_token0": True,
-    },
-]
-
-# Swap event signature
-SWAP_TOPIC = w3.keccak(text="Swap(address,uint256,uint256,uint256,uint256,address)").hex()
+# --- Track Seen Transactions ---
 seen_txns = set()
 
-async def listen_to_pool(pool):
-    print(f"👂 Listening to {pool['name']} at {pool['address']}")
+# --- Event Listener ---
+async def monitor_v2(pair_name, pool_addr):
+    contract = w3.eth.contract(address=Web3.to_checksum_address(pool_addr), abi=UNIV2_ABI)
+    event_filter = contract.events.Swap.createFilter(fromBlock="latest")
 
     while True:
-        try:
-            logs = w3.eth.get_logs({
-                "address": pool["address"],
-                "topics": [SWAP_TOPIC],
-                "fromBlock": "latest"
-            })
+        for event in event_filter.get_new_entries():
+            tx_hash = event.transactionHash.hex()
+            if tx_hash in seen_txns:
+                continue
+            seen_txns.add(tx_hash)
 
-            for log in logs:
-                if log["transactionHash"].hex() in seen_txns:
-                    continue
+            amount0In = event.args.amount0In
+            amount1In = event.args.amount1In
+            amount = max(amount0In, amount1In) / 1e18
 
-                seen_txns.add(log["transactionHash"].hex())
+            if amount >= 1:
+                msg = f"🚀 Buy Alert (${amount:.2f}) on {pair_name}\n🔗 Tx: {tx_hash[:10]}..."
+                try:
+                    await bot.send_message(chat_id=CHAT_ID, text=msg)
+                    print(f"✅ Sent alert for {pair_name}: {msg}")
+                except Exception as e:
+                    print(f"❌ Telegram error: {e}")
+        await asyncio.sleep(5)
 
-                data = log["data"][2:]  # Strip 0x
-                amounts = [int(data[i:i+64], 16) for i in range(0, 64 * 4, 64)]
-                amount0_in, amount1_in, amount0_out, amount1_out = amounts
+# (Optional) Placeholder for Pancake V3 monitoring
+async def monitor_v3(pair_name, pool_addr):
+    print(f"⏳ Skipping {pair_name} (Pancake V3 not yet integrated)")
+    await asyncio.sleep(99999)
 
-                # Determine if it's a buy based on Altitude direction
-                is_buy = False
-                if pool["altitude_is_token0"]:
-                    is_buy = amount1_in > 0 and amount0_out > 0
-                else:
-                    is_buy = amount0_in > 0 and amount1_out > 0
-
-                if is_buy:
-                    msg = f"🚀 Buy Alert on {pool['name']}\nTx: {log['transactionHash'].hex()}"
-                    try:
-                        await bot.send_message(chat_id=CHAT_ID, text=msg)
-                        print(f"✅ Sent: {msg}")
-                    except TelegramError as e:
-                        print(f"❌ Telegram error: {e}")
-                else:
-                    print(f"ℹ️ Non-buy txn on {pool['name']}")
-
-        except Exception as e:
-            print(f"❌ Error fetching logs for {pool['name']}: {e}")
-
-        await asyncio.sleep(10)
-
+# --- Main ---
 async def main():
-    print("📡 Altitude BuyBot started with Ankr RPC...")
-    tasks = [listen_to_pool(pool) for pool in POOLS]
+    print("📡 Altitude BuyBot started using on-chain RPC")
+
+    tasks = []
+    for name, info in POOLS.items():
+        if info["abi"] == "uniswap_v2.json":
+            tasks.append(asyncio.create_task(monitor_v2(name, info["address"])))
+        else:
+            tasks.append(asyncio.create_task(monitor_v3(name, info["address"])))
     await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
