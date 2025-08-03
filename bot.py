@@ -3,7 +3,8 @@ import json
 import time
 from web3 import Web3
 from telegram import Bot
-from eth_abi import decode_abi
+from telegram.ext import Updater
+
 
 # Environment variables (set in Railway)
 BOT_TOKEN = "your-bot-token"
