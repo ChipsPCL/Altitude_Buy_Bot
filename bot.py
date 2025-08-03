@@ -20,10 +20,10 @@ def get_trades(pair_url):
         r = requests.get(pair_url, timeout=10)
         data = r.json()
         trades = data.get("pair", {}).get("txns", {}).get("m5", [])
-        print(f"✅ Trades from {pair_url.split('/')[-1]}: {trades}")  # DEBUG
+        print(f"✅ Trades from {pair_url.split('/')[-1]}: {trades}")
         return trades
     except Exception as e:
-        print("Error fetching data:", e)
+        print("❌ Error fetching data:", e)
         return []
 
 def main():
@@ -35,7 +35,8 @@ def main():
             for t in trades:
                 if isinstance(t, dict):
                     txn_hash = t.get("hash")
-                    print(f"🔍 Checking trade {txn_hash} — Type: {t.get('type')} — Price: {t.get('priceUsd')}")  # DEBUG
+                    print(f"🔍 Checking trade {txn_hash} — Type: {t.get('type')} — Price: {t.get('priceUsd')}")
+
                     if (
                         t.get("type") == "buy" and
                         t.get("priceUsd") and
@@ -43,8 +44,14 @@ def main():
                         txn_hash not in last_hashes
                     ):
                         msg = f"🚀 Buy Alert: ${t.get('priceUsd')} | Pair: {pair.split('/')[-1]}"
-                        print(f"📣 SENDING: {msg}")  # DEBUG
-                        bot.send_message(chat_id=CHAT_ID, text=msg)
+                        print(f"📣 Preparing to send: {msg}")
+
+                        try:
+                            bot.send_message(chat_id=CHAT_ID, text=msg)
+                            print("✅ Message sent to Telegram!")
+                        except Exception as e:
+                            print(f"❌ Error sending message: {e}")
+
                         last_hashes.add(txn_hash)
         time.sleep(60)
 
