@@ -19,8 +19,12 @@ def get_trades(pair_url):
     try:
         r = requests.get(pair_url, timeout=10)
         data = r.json()
-        trades = data.get("pair", {}).get("txns", {}).get("m5", [])
-        print(f"✅ Trades from {pair_url.split('/')[-1]}: {trades}")
+
+        # ✅ Use 'recent' for actual trade objects (not just counts)
+        trades = data.get("pair", {}).get("txns", {}).get("recent", [])
+        print(f"✅ Fetched {len(trades)} trades from {pair_url.split('/')[-1]}")
+        for t in trades:
+            print("🧪 Raw trade data:", t)  # DEBUG: Show actual data for inspection
         return trades
     except Exception as e:
         print("❌ Error fetching data:", e)
@@ -29,12 +33,11 @@ def get_trades(pair_url):
 def main():
     print("🚀 Altitude Buy Bot started...")
     last_hashes = set()
+
     while True:
         for pair in PAIRS:
             trades = get_trades(pair)
             for t in trades:
-                print(f"🧪 Raw trade data: {t}")  # 👈 NEW DEBUG LINE to show entire trade dictionary
-
                 if isinstance(t, dict):
                     txn_hash = t.get("hash")
                     print(f"🔍 Checking trade {txn_hash} — Type: {t.get('type')} — Price: {t.get('priceUsd')}")
