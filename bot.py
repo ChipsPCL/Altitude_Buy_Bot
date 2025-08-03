@@ -19,12 +19,8 @@ def get_trades(pair_url):
     try:
         r = requests.get(pair_url, timeout=10)
         data = r.json()
-
-        # ✅ Use 'recent' for actual trade objects (not just counts)
-        trades = data.get("pair", {}).get("txns", {}).get("recent", [])
+        trades = data.get("pair", {}).get("recentTxns", [])
         print(f"✅ Fetched {len(trades)} trades from {pair_url.split('/')[-1]}")
-        for t in trades:
-            print("🧪 Raw trade data:", t)  # DEBUG: Show actual data for inspection
         return trades
     except Exception as e:
         print("❌ Error fetching data:", e)
@@ -40,16 +36,19 @@ def main():
             for t in trades:
                 if isinstance(t, dict):
                     txn_hash = t.get("hash")
-                    print(f"🔍 Checking trade {txn_hash} — Type: {t.get('type')} — Price: {t.get('priceUsd')}")
+                    trade_type = t.get("type")
+                    price_usd = t.get("priceUsd")
+                    print(f"🔍 Checking trade {txn_hash} — Type: {trade_type} — Price: {price_usd}")
 
+                    # Only send alerts for buys, price >= 1 USD, and unseen txns
                     if (
-                        t.get("type") == "buy" and
-                        t.get("priceUsd") and
-                        float(t.get("priceUsd", 0)) >= 1 and
+                        trade_type == "buy" and
+                        price_usd and
+                        float(price_usd) >= 1 and
                         txn_hash not in last_hashes
                     ):
-                        msg = f"🚀 Buy Alert: ${t.get('priceUsd')} | Pair: {pair.split('/')[-1]}"
-                        print(f"📣 Preparing to send: {msg}")
+                        msg = f"🚀 Buy Alert: ${price_usd} | Pair: {pair.split('/')[-1]}"
+                        print(f"📣 Sending message: {msg}")
 
                         try:
                             bot.send_message(chat_id=CHAT_ID, text=msg)
@@ -58,6 +57,7 @@ def main():
                             print(f"❌ Error sending message: {e}")
 
                         last_hashes.add(txn_hash)
+
         time.sleep(60)
 
 if __name__ == "__main__":
