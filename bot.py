@@ -42,7 +42,8 @@ seen_txns = set()
 # --- Event Listener ---
 async def monitor_v2(pair_name, pool_addr):
     contract = w3.eth.contract(address=Web3.to_checksum_address(pool_addr), abi=UNIV2_ABI)
-    event_filter = contract.events.Swap.createFilter(fromBlock="latest")
+    event_filter = contract.events.Swap.create_filter(fromBlock="latest")
+
 
     while True:
         for event in event_filter.get_new_entries():
