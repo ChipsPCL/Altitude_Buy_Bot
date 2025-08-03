@@ -1,85 +1,100 @@
 import asyncio
 import json
+import time
 from web3 import Web3
 from telegram import Bot
+from eth_abi import decode_abi
 
-# --- Hardcoded Config ---
-BOT_TOKEN = "8454008954:AAE9NwtBPPmbVggVCSsk1N3oNAiRRC3fhhE"
-CHAT_ID = "-1001957125015"
-RPC_URL = "wss://rpc.ankr.com/base/ws"
+# Environment variables (set in Railway)
+BOT_TOKEN = "your-bot-token"
+CHAT_ID = "your-chat-id"
+RPC_URL = "https://rpc.ankr.com/base"  # <-- use HTTP
 
-# --- Altitude Pools ---
-POOLS = {
-    "Altitude/WETH": {
-        "address": "0xD57f6e7D7eC911bA8deFCf93d3682BB76959e950",
-        "abi": "uniswap_v2.json"
-    },
-    "Altitude/USDC": {
-        "address": "0xbf09C7F883F045fEeA7a59b50BA2E5dF080fb4B8",
-        "abi": "uniswap_v2.json"
-    },
-    "Altitude/cbBTC": {
-        "address": "0xd93846f45180A7e99d5bCBc67cefC4538bb02214",
-        "abi": "pancake_v3.json"
-    }
-}
-
-# --- Load ABIs ---
-with open("uniswap_v2.json") as f:
-    UNIV2_ABI = json.load(f)
-with open("pancake_v3.json") as f:
-    V3_ABI = json.load(f)
-
-# --- Telegram Bot Setup ---
 bot = Bot(token=BOT_TOKEN)
+w3 = Web3(Web3.HTTPProvider(RPC_URL))
+seen_tx = set()
 
-# --- Web3 Setup ---
-w3 = Web3(Web3.WebsocketProvider(RPC_URL))
+# Load ABIs
+with open("uniswap_v2.json") as f:
+    uniswap_abi = json.load(f)
 
-# --- Track Seen Transactions ---
-seen_txns = set()
+with open("pancake_v3.json") as f:
+    pancake_abi = json.load(f)
 
-# --- Event Listener ---
-async def monitor_v2(pair_name, pool_addr):
-    contract = w3.eth.contract(address=Web3.to_checksum_address(pool_addr), abi=UNIV2_ABI)
-    event_filter = contract.events.Swap.create_filter(fromBlock="latest")
+# Pool configurations
+POOLS = [
+    {
+        "name": "Altitude/WETH",
+        "address": "0xD57f6e7D7eC911bA8deFCf93d3682BB76959e950",
+        "abi": uniswap_abi,
+        "type": "v2"
+    },
+    {
+        "name": "Altitude/USDC",
+        "address": "0xbf09C7F883F045fEeA7a59b50BA2E5dF080fb4B8",
+        "abi": uniswap_abi,
+        "type": "v2"
+    },
+    {
+        "name": "Altitude/cbBTC",
+        "address": "0xd93846f45180A7e99d5bCBc67cefC4538bb02214",
+        "abi": pancake_abi,
+        "type": "v3"  # Not yet implemented fully
+    }
+]
 
+def decode_v2_swap(log):
+    topics = log['topics']
+    data = log['data']
+    values = decode_abi(['uint256','uint256','uint256','uint256'], bytes.fromhex(data[2:]))
+    return {
+        "amount0In": values[0],
+        "amount1In": values[1],
+        "amount0Out": values[2],
+        "amount1Out": values[3],
+        "tx_hash": log['transactionHash'].hex()
+    }
+
+async def monitor_v2(pool):
+    contract = w3.eth.contract(address=Web3.to_checksum_address(pool['address']), abi=pool['abi'])
+    swap_event = contract.events.Swap()._get_event_abi()
+
+    last_block = w3.eth.block_number
 
     while True:
-        for event in event_filter.get_new_entries():
-            tx_hash = event.transactionHash.hex()
-            if tx_hash in seen_txns:
-                continue
-            seen_txns.add(tx_hash)
+        try:
+            latest = w3.eth.block_number
+            logs = w3.eth.get_logs({
+                "fromBlock": last_block + 1,
+                "toBlock": latest,
+                "address": pool['address'],
+                "topics": [Web3.keccak(text="Swap(address,uint256,uint256,uint256,uint256,address)").hex()]
+            })
 
-            amount0In = event.args.amount0In
-            amount1In = event.args.amount1In
-            amount = max(amount0In, amount1In) / 1e18
+            for log in logs:
+                data = decode_v2_swap(log)
+                tx_hash = data["tx_hash"]
+                if tx_hash in seen_tx:
+                    continue
+                seen_tx.add(tx_hash)
 
-            if amount >= 1:
-                msg = f"🚀 Buy Alert (${amount:.2f}) on {pair_name}\n🔗 Tx: {tx_hash[:10]}..."
-                try:
-                    await bot.send_message(chat_id=CHAT_ID, text=msg)
-                    print(f"✅ Sent alert for {pair_name}: {msg}")
-                except Exception as e:
-                    print(f"❌ Telegram error: {e}")
-        await asyncio.sleep(5)
+                msg = f"🚀 Buy/Sell Alert on {pool['name']}\nTX: https://basescan.org/tx/{tx_hash}"
+                await bot.send_message(chat_id=CHAT_ID, text=msg)
+                print(f"✅ Sent alert for {tx_hash}")
 
-# (Optional) Placeholder for Pancake V3 monitoring
-async def monitor_v3(pair_name, pool_addr):
-    print(f"⏳ Skipping {pair_name} (Pancake V3 not yet integrated)")
-    await asyncio.sleep(99999)
+            last_block = latest
+        except Exception as e:
+            print(f"❌ Error polling {pool['name']}: {e}")
+        await asyncio.sleep(30)
 
-# --- Main ---
 async def main():
     print("📡 Altitude BuyBot started using on-chain RPC")
-
     tasks = []
-    for name, info in POOLS.items():
-        if info["abi"] == "uniswap_v2.json":
-            tasks.append(asyncio.create_task(monitor_v2(name, info["address"])))
+    for pool in POOLS:
+        if pool['type'] == 'v2':
+            tasks.append(asyncio.create_task(monitor_v2(pool)))
         else:
-            tasks.append(asyncio.create_task(monitor_v3(name, info["address"])))
+            print(f"⏳ Skipping {pool['name']} (Pancake V3 not yet integrated)")
     await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
