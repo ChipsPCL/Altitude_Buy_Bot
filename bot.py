@@ -1,75 +1,82 @@
-import os
 import asyncio
+import os
 from web3 import Web3
 from telegram import Bot
-import aiohttp
+from telegram.error import TelegramError
 
-# --- Configuration ---
-BOT_TOKEN  = os.getenv("BOT_TOKEN")
-CHAT_ID    = os.getenv("CHAT_ID")
-RPC_URL    = os.getenv("RPC_URL")  # e.g. wss://rpc.ankr.com/base/ws
-
-# Pools to monitor
-POOL_DATA = [
-    {"name": "Altitude – BaseSwap V2", "address": "0xd57f6e7D7eC911bA8deFCf93d3682BB76959e950", "type": "v2"},
-    {"name": "Altitude – Aerodrome V2", "address": "0xbf09C7F883F045fEeA7a59b50BA2E5dF080fb4B8", "type": "v2"},
-    {"name": "Altitude – PancakeSwap V3", "address": "0xd93846f45180a7e99d5bCBc67cefC4538bb02214", "type": "v3"},
-]
-
-# Simplified ABIs for Swap events
-V2_ABI = [{
-    "anonymous": False,
-    "inputs": [
-        {"indexed": False, "name": "sender", "type": "address"},
-        {"indexed": False, "name": "amount0In", "type": "uint256"},
-        {"indexed": False, "name": "amount1In", "type": "uint256"},
-        {"indexed": False, "name": "amount0Out", "type": "uint256"},
-        {"indexed": False, "name": "amount1Out", "type": "uint256"},
-        {"indexed": True, "name": "to", "type": "address"},
-    ],
-    "name": "Swap",
-    "type": "event"
-}]
-V3_ABI = V2_ABI  # For simplicity use same event decoding
+# Env vars
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+RPC_URL = os.getenv("RPC_URL")
 
 bot = Bot(token=BOT_TOKEN)
 w3 = Web3(Web3.WebsocketProvider(RPC_URL))
 
-seen = set()
+# Pool data
+POOLS = [
+    {
+        "name": "Altitude/WETH",
+        "address": Web3.to_checksum_address("0xd57f6e7d7ec911ba8defcf93d3682bb76959e950"),
+        "altitude_is_token0": False,
+    },
+    {
+        "name": "Altitude/USDC",
+        "address": Web3.to_checksum_address("0xbf09C7F883F045fEeA7a59b50BA2E5dF080fb4B8"),
+        "altitude_is_token0": True,
+    },
+]
 
-async def fetch_price_usd(symbol):
-    async with aiohttp.ClientSession() as session:
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
-        async with session.get(url, timeout=5) as r:
-            j = await r.json()
-            return j.get(symbol, {}).get("usd", 0)
+# Swap event signature
+SWAP_TOPIC = w3.keccak(text="Swap(address,uint256,uint256,uint256,uint256,address)").hex()
+seen_txns = set()
 
-async def handle_event(event, pair):
-    tx = event["transactionHash"].hex()
-    if tx in seen:
-        return
-    seen.add(tx)
+async def listen_to_pool(pool):
+    print(f"👂 Listening to {pool['name']} at {pool['address']}")
 
-    # For V2: amount0In/out and amount1In/out. Identify which token is Altitude
-    amt_in = int(event["args"]["amount1In"] or 0)
-    amt_out = int(event["args"]["amount1Out"] or 0)
-    # Simplify: assume one side is Altitude and other is ETH/cbBTC/USDC
-    usd_val = amt_out * await fetch_price_usd("ethereum") / 1e18 if amt_out else amt_in * await fetch_price_usd("ethereum") / 1e18
-
-    if usd_val >= 1:
-        msg = f"🚀 Buy Alert (${usd_val:.2f}) on {pair['name']}\n🔗 Tx: {tx[:10]}..."
-        await bot.send_message(chat_id=CHAT_ID, text=msg)
-
-async def monitor_pool(pair):
-    contract = w3.eth.contract(address=pair["address"], abi=V2_ABI)
-    event_filter = contract.events.Swap.create_filter(fromBlock="latest")
     while True:
-        for ev in event_filter.get_new_entries():
-            await handle_event(ev, pair)
-        await asyncio.sleep(2)
+        try:
+            logs = w3.eth.get_logs({
+                "address": pool["address"],
+                "topics": [SWAP_TOPIC],
+                "fromBlock": "latest"
+            })
+
+            for log in logs:
+                if log["transactionHash"].hex() in seen_txns:
+                    continue
+
+                seen_txns.add(log["transactionHash"].hex())
+
+                data = log["data"][2:]  # Strip 0x
+                amounts = [int(data[i:i+64], 16) for i in range(0, 64 * 4, 64)]
+                amount0_in, amount1_in, amount0_out, amount1_out = amounts
+
+                # Determine if it's a buy based on Altitude direction
+                is_buy = False
+                if pool["altitude_is_token0"]:
+                    is_buy = amount1_in > 0 and amount0_out > 0
+                else:
+                    is_buy = amount0_in > 0 and amount1_out > 0
+
+                if is_buy:
+                    msg = f"🚀 Buy Alert on {pool['name']}\nTx: {log['transactionHash'].hex()}"
+                    try:
+                        await bot.send_message(chat_id=CHAT_ID, text=msg)
+                        print(f"✅ Sent: {msg}")
+                    except TelegramError as e:
+                        print(f"❌ Telegram error: {e}")
+                else:
+                    print(f"ℹ️ Non-buy txn on {pool['name']}")
+
+        except Exception as e:
+            print(f"❌ Error fetching logs for {pool['name']}: {e}")
+
+        await asyncio.sleep(10)
 
 async def main():
-    await asyncio.gather(*(monitor_pool(p) for p in POOL_DATA))
+    print("📡 Altitude BuyBot started with Ankr RPC...")
+    tasks = [listen_to_pool(pool) for pool in POOLS]
+    await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
     asyncio.run(main())
